@@ -11,13 +11,15 @@
 // implied.  See the Apache License Version 2.0 for the specific language
 // governing permissions and limitations there under.
 //
+extern crate sled;
 
 use std::fmt;
 use std::panic;
 use std::thread::Result as ThreadResult;
 use consul::Client;
 use serde_json;
-use base64::decode;
+use base64::{decode, encode};
+use self::sled::{ConfigBuilder, Tree};
 
 use factotum_server::server::JobRequest;
 
@@ -32,49 +34,53 @@ pub trait Persistence {
 }
 
 #[derive(Clone, Debug)]
-pub struct ConsulPersistence {
-    server_id: String,
-    host: String,
-    port: u32,
-    namespace: String,
+pub struct SledPersistence {
+    path: String
 }
 
-impl ConsulPersistence {
-    pub fn new(wrapped_id: Option<String>, wrapped_host: Option<String>, wrapped_port: Option<u32>, wrapped_namespace: Option<String>) -> ConsulPersistence {
-        ConsulPersistence {
-            server_id: if let Some(server_id) = wrapped_id { server_id } else { ::CONSUL_NAME_DEFAULT.to_string() },
-            host: if let Some(host) = wrapped_host { host } else { ::CONSUL_IP_DEFAULT.to_string() },
-            port: if let Some(port) = wrapped_port { port } else { ::CONSUL_PORT_DEFAULT },
-            namespace: if let Some(namespace) = wrapped_namespace { namespace } else { ::CONSUL_NAMESPACE_DEFAULT.to_string() },
+impl SledPersistence {
+    pub fn new(wrapped_path: Option<String>) -> SledPersistence {
+        SledPersistence {
+            path: if let Some(path) = wrapped_path { path } else { ::SLED_PATH.to_string() }
         }
     }
 
-    fn client(&self) -> Client {
-        let address = format!("http://{}:{}", self.host.clone(), self.port.clone());
-        return Client::new(address)
+    fn client(&self) -> Tree {
+        let config = ConfigBuilder::new()
+        .path(&self.path)
+        .build();
+        Tree::start(config).unwrap()
     }
 }
 
-impl Persistence for ConsulPersistence {
+impl Persistence for SledPersistence {
     fn id(&self) -> &str {
-        &self.server_id
+        "sled"
     }
 
     fn set_key(&self, key: &str, value: &str) -> ThreadResult<()> {
         panic::catch_unwind(|| {
-            let _result = self.client().keystore.set_key(key.to_owned(), value.to_owned());
+            let encoded_value = encode(value.as_bytes());
+            let _result = self.client().set(key.as_bytes().to_owned(), encoded_value.as_bytes().to_owned());
         })
     }
 
     fn get_key(&self, key: &str) -> ThreadResult<Option<String>> {
         panic::catch_unwind(|| {
-            let result = self.client().keystore.get_key(key.to_owned()).unwrap();
-            return result;
+            let value = self.client().get(key.as_bytes()).unwrap().unwrap();
+            // let utf8_value = match value {
+            //     Some(value) => {
+            //         String::from_utf8(value)
+            //     },
+            //     Err(e) => {
+            //         None
+            //     }
+            // };
+            return Some(String::from_utf8(value).unwrap())
         })
     }
-
     fn prepend_namespace(&self, job_ref: &str) -> String {
-        apply_namespace_if_absent(&self.namespace, job_ref)
+        job_ref.to_string()
     }
 }
 
@@ -107,7 +113,6 @@ pub fn get_entry<T: Persistence>(persistence: &T, job_ref: &str) -> Option<JobEn
         },
     };
 
-    // decode base64 string
     // deserialize to JobEntry
     if let Some(base64_str) = keystore_val {
         let decode_result = &decode(&base64_str).expect("Base64 string decode error");
@@ -116,6 +121,59 @@ pub fn get_entry<T: Persistence>(persistence: &T, job_ref: &str) -> Option<JobEn
         Some(job_entry)
     } else {
         None
+    }
+}
+
+const CONSUL_NAME_DEFAULT: &'static str = ::FACTOTUM;
+const CONSUL_IP_DEFAULT: &'static str = "127.0.0.1";
+const CONSUL_PORT_DEFAULT: u32 = 8500;
+const CONSUL_NAMESPACE_DEFAULT: &'static str = "com.snowplowanalytics/factotum";
+
+
+#[derive(Clone, Debug)]
+pub struct ConsulPersistence {
+    server_id: String,
+    host: String,
+    port: u32,
+    namespace: String,
+}
+
+impl ConsulPersistence {
+    pub fn new(wrapped_id: Option<String>, wrapped_host: Option<String>, wrapped_port: Option<u32>, wrapped_namespace: Option<String>) -> ConsulPersistence {
+        ConsulPersistence {
+            server_id: if let Some(server_id) = wrapped_id { server_id } else { CONSUL_NAME_DEFAULT.to_string() },
+            host: if let Some(host) = wrapped_host { host } else { CONSUL_IP_DEFAULT.to_string() },
+            port: if let Some(port) = wrapped_port { port } else { CONSUL_PORT_DEFAULT },
+            namespace: if let Some(namespace) = wrapped_namespace { namespace } else { CONSUL_NAMESPACE_DEFAULT.to_string() },
+        }
+    }
+
+    fn client(&self) -> Client {
+        let address = format!("http://{}:{}", self.host.clone(), self.port.clone());
+        return Client::new(address)
+    }
+}
+
+impl Persistence for ConsulPersistence {
+    fn id(&self) -> &str {
+        &self.server_id
+    }
+
+    fn set_key(&self, key: &str, value: &str) -> ThreadResult<()> {
+        panic::catch_unwind(|| {
+            let _result = self.client().keystore.set_key(key.to_owned(), value.to_owned());
+        })
+    }
+
+    fn get_key(&self, key: &str) -> ThreadResult<Option<String>> {
+        panic::catch_unwind(|| {
+            let result = self.client().keystore.get_key(key.to_owned()).unwrap();
+            return result;
+        })
+    }
+
+    fn prepend_namespace(&self, job_ref: &str) -> String {
+        apply_namespace_if_absent(&self.namespace, job_ref)
     }
 }
 

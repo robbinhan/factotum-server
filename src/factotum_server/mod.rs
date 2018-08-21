@@ -40,7 +40,7 @@ use chrono::prelude::Utc;
 use Args;
 use factotum_server::command::{CommandStore, Execution};
 use factotum_server::dispatcher::{Dispatch, Dispatcher, Query};
-use factotum_server::persistence::{Persistence, ConsulPersistence, JobState, JobOutcome};
+use factotum_server::persistence::{Persistence, SledPersistence, ConsulPersistence, JobState, JobOutcome};
 use factotum_server::responder::{DispatcherStatus, JobStatus, WorkerStatus};
 use factotum_server::server::{ServerManager, JobRequest};
 
@@ -51,8 +51,14 @@ impl Key for Server {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct Storage;
-impl Key for Storage {
+pub struct DevStorage;
+impl Key for DevStorage {
+    type Value = SledPersistence;
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ConsulStorage;
+impl Key for ConsulStorage {
     type Value = ConsulPersistence;
 }
 
@@ -67,34 +73,67 @@ pub struct Updates;
 impl Key for Updates {
     type Value = Mutex<Sender<Dispatch>>;
 }
+pub struct Env {
+   env: &'static str
+}
+
+impl Env {
+     pub fn new(env: &'static str) -> Self{
+         Env {
+             env : env
+         }
+    }
+
+    pub fn get(&self) -> &'static str {
+        self.env
+    }
+}
+#[derive(Debug, Copy, Clone)]
+pub struct EnvKey;
+impl Key for EnvKey {
+    type Value = Env;
+}
 
 pub fn start(args: Args) -> Result<(), String> {
     let server = ServerManager::new(args.flag_ip, args.flag_port, args.flag_webhook, args.flag_no_colour, args.flag_max_stdouterr_size);
-    let persistence = ConsulPersistence::new(args.flag_consul_name, args.flag_consul_ip, args.flag_consul_port, args.flag_consul_namespace);
     let dispatcher = Dispatcher::new(args.flag_max_jobs, args.flag_max_workers);
     let command_store = commands![::FACTOTUM.to_string() => args.flag_factotum_bin];
     
     let address = SocketAddr::from_str(&format!("{}:{}", server.ip, server.port)).expect("Failed to parse socket address");
 
-    let (requests_channel, _, _) = trigger_worker_manager(dispatcher, persistence.clone(), &command_store).expect("Failed to start up worker manager thread");
-
     let router = router!(
-        index:      get     "/"         =>  responder::api,
-        help:       get     "/help"     =>  responder::api,
-        status:     get     "/status"   =>  responder::status,
-        settings:   post    "/settings" =>  responder::settings,
-        submit:     post    "/submit"   =>  responder::submit,
+        index:          get     "/"             =>  responder::api,
+        help:           get     "/help"         =>  responder::api,
+        status:         get     "/status"       =>  responder::status,
+        settings:       post    "/settings"     =>  responder::settings,
+        submit:         post    "/submit"       =>  responder::submit,
         submit_new:     post    "/submit/new"   =>  responder::submit,
-        check:      get     "/check"    =>  responder::check
+        check:          get     "/check"        =>  responder::check
     );
     let (logger_before, logger_after) = Logger::new(None);
+
+
+    let env : Env;
 
     let mut chain = Chain::new(router);
     chain.link_before(logger_before);
     chain.link(State::<Server>::both(server));
-    chain.link(State::<Storage>::both(persistence));
+    if args.flag_dev {
+        let dev_persistence = SledPersistence::new(args.flag_sled_dir);
+        let (requests_channel, _, _) = trigger_worker_manager(dispatcher, dev_persistence.clone(), &command_store).expect("Failed to start up worker manager thread");
+        env = Env::new("dev");
+        chain.link(State::<DevStorage>::both(dev_persistence));
+        chain.link(Read::<Updates>::both(Mutex::new(requests_channel)));
+    } else {
+        let consil_persistence = ConsulPersistence::new(args.flag_consul_name, args.flag_consul_ip, args.flag_consul_port, args.flag_consul_namespace);
+        let (requests_channel, _, _) = trigger_worker_manager(dispatcher, consil_persistence.clone(), &command_store).expect("Failed to start up worker manager thread");
+        env = Env::new("prd");
+        chain.link(State::<ConsulStorage>::both(consil_persistence));
+        chain.link(Read::<Updates>::both(Mutex::new(requests_channel)));
+    }
+    chain.link(Read::<EnvKey>::both(env));
     chain.link(Read::<Paths>::both(RwLock::new(command_store)));
-    chain.link(Read::<Updates>::both(Mutex::new(requests_channel)));
+    
     chain.link_after(logger_after);
     
     match Iron::new(chain).http(address) {

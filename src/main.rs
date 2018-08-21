@@ -57,10 +57,7 @@ const PORT_DEFAULT: u32 = 3000;
 const MAX_JOBS_DEFAULT: usize = 1000;
 const MAX_WORKERS_DEFAULT: usize = 20;
 
-const CONSUL_NAME_DEFAULT: &'static str = FACTOTUM;
-const CONSUL_IP_DEFAULT: &'static str = "127.0.0.1";
-const CONSUL_PORT_DEFAULT: u32 = 8500;
-const CONSUL_NAMESPACE_DEFAULT: &'static str = "com.snowplowanalytics/factotum";
+const SLED_PATH: &'static str = "sled"; // sled store dir
 
 const SERVER_STATE_RUN: &'static str = "run";
 const SERVER_STATE_DRAIN: &'static str = "drain";
@@ -74,7 +71,7 @@ const USAGE: &'static str =
 Factotum Server.
 
 Usage:
-  factotum-server --factotum-bin=<path> [--ip=<address>] [--port=<number>] [--max-jobs=<size>] [--max-workers=<size>] [--webhook=<url>] [--no-colour] [--consul-name=<name>] [--consul-ip=<address>] [--consul-port=<number>] [--consul-namespace=<namespace>] [--log-level=<level>] [--max-stdouterr-size=<bytes>]
+  factotum-server --factotum-bin=<path> [--ip=<address>] [--port=<number>] [--max-jobs=<size>] [--max-workers=<size>] [--webhook=<url>] [--no-colour] [--consul-name=<name>] [--consul-ip=<address>] [--consul-port=<number>] [--consul-namespace=<namespace>] [--log-level=<level>] [--max-stdouterr-size=<bytes>] [--dev] [--sled_dir=<dir_path>]
   factotum-server (-h | --help)
   factotum-server (-v | --version)
 
@@ -94,6 +91,8 @@ Options:
   --consul-port=<number>                Specify port number for Consul server agent.
   --consul-namespace=<namespace>        Specify namespace of job references stored in Consul persistence.
   --max-stdouterr-size=<bytes>          The maximum size of the individual stdout/err sent via the webhook functions for job updates.
+  --dev                                 Use sled for persistence data replace consul.
+  --sled_dir=<dir_path>                 sled store data dir.
 ";
 
 #[derive(Debug, RustcDecodable)]
@@ -112,6 +111,8 @@ pub struct Args {
     flag_consul_port: Option<u32>,
     flag_consul_namespace: Option<String>,
     flag_max_stdouterr_size: Option<usize>,
+    flag_dev: bool,
+    flag_sled_dir: Option<String>
 }
 
 fn main() {

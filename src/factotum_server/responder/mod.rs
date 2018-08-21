@@ -27,7 +27,7 @@ use persistent::{Read, State};
 use serde::Serialize;
 use serde_json;
 
-use factotum_server::{Paths, Server, Storage, Updates};
+use factotum_server::{Paths, Server, DevStorage, ConsulStorage, Updates, EnvKey};
 use factotum_server::command::Execution;
 use factotum_server::dispatcher::{Dispatch, Query};
 use factotum_server::persistence;
@@ -144,14 +144,7 @@ pub fn submit(request: &mut Request) -> IronResult<Response> {
         Ok(result) => result,
         Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
     };
-    let storage_rwlock = match request.get::<State<Storage>>() {
-        Ok(lock) => lock,
-        Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
-    };
-    let persistence = match storage_rwlock.write() {
-        Ok(result) => result,
-        Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
-    };
+    
     let command_store_rwlock = match request.get::<Read<Paths>>() {
         Ok(lock) => lock,
         Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
@@ -169,23 +162,67 @@ pub fn submit(request: &mut Request) -> IronResult<Response> {
         Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
     };
 
-    let (status, response) = process_submission(&url, request_body, server.deref(), persistence.deref(), command_store.deref(), jobs_channel.deref());
-    return_json(status, response)
+    let env = match request.get::<Read<EnvKey>>() {
+        Ok(env) => env ,
+        Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
+    };
+
+    if env.get() == "dev" {
+        let storage_rwlock = match request.get::<State<DevStorage>>() {
+            Ok(lock) => lock,
+            Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
+        };
+        let persistence = match storage_rwlock.write() {
+            Ok(result) => result,
+            Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
+        };
+        let (status, response) = process_submission(&url, request_body, server.deref(), persistence.deref(), command_store.deref(), jobs_channel.deref());
+        return_json(status, response)
+    } else {
+        let storage_rwlock = match request.get::<State<ConsulStorage>>() {
+            Ok(lock) => lock,
+            Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
+        };
+        let persistence = match storage_rwlock.write() {
+            Ok(result) => result,
+            Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
+        };
+        let (status, response) = process_submission(&url, request_body, server.deref(), persistence.deref(), command_store.deref(), jobs_channel.deref());
+        return_json(status, response)
+    }
 }
 
 pub fn check(request: &mut Request) -> IronResult<Response> {
     let url: Url = request.url.clone().into();
-    let storage_rwlock = match request.get::<State<Storage>>() {
-        Ok(lock) => lock,
-        Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
-    };
-    let persistence = match storage_rwlock.write() {
-        Ok(result) => result,
+
+    let env = match request.get::<Read<EnvKey>>() {
+        Ok(env) => env ,
         Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
     };
 
-    let (status, response) = check_job_request(&url, persistence.deref());
-    return_json(status, response)
+    if env.get() == "dev" {
+        let storage_rwlock = match request.get::<State<DevStorage>>() {
+            Ok(lock) => lock,
+            Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
+        };
+        let persistence = match storage_rwlock.write() {
+            Ok(result) => result,
+            Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
+        };
+        let (status, response) = check_job_request(&url, persistence.deref());
+        return_json(status, response)
+    } else {
+        let storage_rwlock = match request.get::<State<ConsulStorage>>() {
+            Ok(lock) => lock,
+            Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
+        };
+        let persistence = match storage_rwlock.write() {
+            Ok(result) => result,
+            Err(e) => return return_json(status::ServiceUnavailable, encode(&url, e.to_string()))
+        };
+        let (status, response) = check_job_request(&url, persistence.deref());
+        return_json(status, response)
+    }
 }
 
 // Helpers
